@@ -33,6 +33,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS sip_calls (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 call_id TEXT UNIQUE NOT NULL,
+            session_id TEXT,
                 calling_number TEXT,
                 called_number TEXT,
                 invite_time TEXT,
@@ -51,6 +52,10 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_invite_time ON sip_calls(invite_time DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_calling ON sip_calls(calling_number)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_called ON sip_calls(called_number)")
+        try:
+            await db.execute('ALTER TABLE sip_calls ADD COLUMN session_id TEXT')
+        except Exception:
+            pass
         await db.commit()
 
 
@@ -158,6 +163,29 @@ def parse_cisco_qos(lines: List[str]) -> Tuple[Optional[float], Optional[float],
     return (mos, jitter, loss, raw_stat)
 
 
+def cisco_guid_to_confid(guid_str: str) -> str:
+    """Convert Cisco-Guid (4 decimal 32-bit ints) to CDR ConfID hex format: XXXXXXXX XXXXXXXX XX XXXXXXXX."""
+    parts = [p.strip() for p in guid_str.split("-") if p.strip().isdigit()]
+    if len(parts) == 4:
+        nums = [int(p) & 0xFFFFFFFF for p in parts]
+        w0 = f"{nums[0]:08X}"
+        w1 = f"{nums[1]:08X}"
+        w2 = f"{nums[2] & 0xFF:02X}"
+        w3 = f"{nums[3]:08X}"
+        return f"{w0} {w1} {w2} {w3}"
+    return guid_str.strip()
+
+
+def extract_session_id(lines: list[str]) -> Optional[str]:
+    guid = extract_header(lines, ("cisco-guid",))
+    if guid:
+        return cisco_guid_to_confid(guid)
+    sid = extract_header(lines, ("session-id",))
+    if sid:
+        return sid.split(";")[0].strip()
+    return None
+
+
 async def persist_dialog(dialog: dict):
     invite_dt = dialog.get("invite_ts")
     connect_dt = dialog.get("connect_ts")
@@ -175,13 +203,14 @@ async def persist_dialog(dialog: dict):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT INTO sip_calls (
-                call_id, calling_number, called_number,
+                call_id, session_id, calling_number, called_number,
                 invite_time, connect_time, disconnect_time,
                 duration_sec, status, disconnect_cause,
                 qos_mos, qos_jitter_ms, qos_packet_loss, qos_raw,
                 sip_ladder_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(call_id) DO UPDATE SET
+                session_id=COALESCE(excluded.session_id, sip_calls.session_id),
                 calling_number=excluded.calling_number,
                 called_number=excluded.called_number,
                 invite_time=COALESCE(sip_calls.invite_time, excluded.invite_time),
@@ -197,6 +226,7 @@ async def persist_dialog(dialog: dict):
                 sip_ladder_json=excluded.sip_ladder_json
         """, (
             dialog["call_id"],
+            dialog.get("session_id"),
             dialog["calling"],
             dialog["called"],
             fmt_ts(invite_dt),
@@ -241,6 +271,7 @@ async def process_sip_packet(src_ip: str, dst_ip: str, payload: str, ts: float):
         to_hdr = extract_header(lines, ("to", "t"))
         active_dialogs[call_id] = {
             "call_id": call_id,
+            "session_id": extract_session_id(lines),
             "calling": extract_user_part(from_hdr),
             "called": extract_user_part(to_hdr),
             "invite_ts": ts,
@@ -258,6 +289,8 @@ async def process_sip_packet(src_ip: str, dst_ip: str, payload: str, ts: float):
 
     dialog = active_dialogs[call_id]
     dialog["last_seen"] = ts
+    if not dialog.get("session_id"):
+        dialog["session_id"] = extract_session_id(lines)
 
     rel_ms = round((ts - dialog["invite_ts"]) * 1000)
     ts_str = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().strftime("%H:%M:%S.%f")[:-3]
@@ -355,16 +388,16 @@ async def get_calls(q: str = Query("", max_length=128), limit: int = Query(100, 
         if q.strip():
             like = f"%{q.strip()}%"
             cursor = await db.execute("""
-                SELECT id, call_id, calling_number, called_number, invite_time,
+                SELECT id, call_id, session_id, calling_number, called_number, invite_time,
                        connect_time, disconnect_time, duration_sec, status,
                        disconnect_cause, qos_mos, qos_jitter_ms, qos_packet_loss
                 FROM sip_calls
-                WHERE calling_number LIKE ? OR called_number LIKE ? OR call_id LIKE ? OR status LIKE ?
+                WHERE calling_number LIKE ? OR called_number LIKE ? OR call_id LIKE ? OR session_id LIKE ? OR status LIKE ?
                 ORDER BY invite_time DESC LIMIT ?
-            """, (like, like, like, like, limit))
+            """, (like, like, like, like, like, limit))
         else:
             cursor = await db.execute("""
-                SELECT id, call_id, calling_number, called_number, invite_time,
+                SELECT id, call_id, session_id, calling_number, called_number, invite_time,
                        connect_time, disconnect_time, duration_sec, status,
                        disconnect_cause, qos_mos, qos_jitter_ms, qos_packet_loss
                 FROM sip_calls
