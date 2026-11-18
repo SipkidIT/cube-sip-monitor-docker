@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cisco CUBE SIP Flow & QoS Monitor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <header class="bg-slate-900 border-b border-slate-800 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+    <div>
+      <h1 class="text-xl font-bold text-sky-400 tracking-tight">Cisco CUBE SIP Flow &amp; QoS Monitor</h1>
+      <p class="text-xs text-slate-400">Live ERSPAN + sngrep HEPv3 Call Collector &amp; Ladder Inspector</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <input id="searchInput" type="text" placeholder="Filter calling, called, Call-ID..."
+             class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:border-sky-500 w-64" />
+      <button onclick="loadCalls()" class="bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium px-3.5 py-1.5 rounded-lg transition">
+        Refresh
+      </button>
+      <label class="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer select-none">
+        <input id="autoRefresh" type="checkbox" checked class="rounded bg-slate-800 border-slate-600 text-sky-500" />
+        Auto (5s)
+      </label>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+    <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xl">
+      <div class="overflow-x-auto">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="bg-slate-800/80 text-slate-300 text-xs uppercase tracking-wider border-b border-slate-700">
+              <th class="py-3 px-4">Calling</th>
+              <th class="py-3 px-4">Called</th>
+              <th class="py-3 px-4">Connect Time</th>
+              <th class="py-3 px-4">Disconnect Time</th>
+              <th class="py-3 px-4">Duration</th>
+              <th class="py-3 px-4">Status</th>
+              <th class="py-3 px-4">QoS (MOS / Jitter / Loss)</th>
+              <th class="py-3 px-4 text-right">SIP Flow</th>
+            </tr>
+          </thead>
+          <tbody id="callsBody" class="divide-y divide-slate-800 text-sm">
+            <tr>
+              <td colspan="8" class="py-8 text-center text-slate-400">Waiting for SIP calls from Cisco CUBE...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const expandedCalls = new Set();
+
+    function formatDuration(sec) {
+      if (sec === null || sec === undefined) return "—";
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    }
+
+    function statusBadge(status) {
+      const map = {
+        "Connected": "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
+        "Completed": "bg-sky-500/20 text-sky-300 border-sky-500/40",
+        "Ringing / Setup": "bg-amber-500/20 text-amber-300 border-amber-500/40",
+        "Failed": "bg-rose-500/20 text-rose-300 border-rose-500/40",
+        "Canceled": "bg-slate-600/30 text-slate-300 border-slate-500/40"
+      };
+      const cls = map[status] || "bg-slate-700 text-slate-200 border-slate-600";
+      return `<span class="px-2 py-0.5 text-xs font-medium rounded border ${cls}">${status || "Unknown"}</span>`;
+    }
+
+    function formatQoS(call) {
+      if (call.qos_mos === null && call.qos_jitter_ms === null && call.qos_packet_loss === null) {
+        return `<span class="text-slate-500 text-xs">N/A</span>`;
+      }
+      const mos = call.qos_mos !== null ? `<span class="text-emerald-400 font-semibold">MOS ${call.qos_mos}</span>` : "";
+      const jit = call.qos_jitter_ms !== null ? `<span class="text-slate-300">${call.qos_jitter_ms}ms</span>` : "";
+      const loss = call.qos_packet_loss !== null ? `<span class="text-slate-300">${call.qos_packet_loss} pkt</span>` : "";
+      return [mos, jit, loss].filter(Boolean).join(" &middot; ");
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function renderLadder(detail) {
+      const msgs = detail.messages || [];
+      if (!msgs.length) return `<div class="p-4 text-slate-400 text-xs">No SIP messages recorded.</div>`;
+
+      // Collect unique endpoints in order
+      const nodes = [];
+      msgs.forEach(m => {
+        if (!nodes.includes(m.src)) nodes.push(m.src);
+        if (!nodes.includes(m.dst)) nodes.push(m.dst);
+      });
+
+      const nodeHeader = nodes.map(ip =>
+        `<div class="flex-1 text-center font-semibold text-sky-300 text-xs mono border-b border-slate-700 pb-1.5">${escapeHtml(ip)}</div>`
+      ).join("");
+
+      const rows = msgs.map((m, idx) => {
+        const srcIdx = nodes.indexOf(m.src);
+        const dstIdx = nodes.indexOf(m.dst);
+        const goRight = dstIdx >= srcIdx;
+        const arrow = goRight ? "&#8594;" : "&#8592;";
+        const color = m.is_request ? "text-amber-300" : (m.label.includes("200 OK") ? "text-emerald-300" : "text-sky-300");
+
+        return `
+          <div class="border-b border-slate-800/80 py-2 px-3 hover:bg-slate-800/50 cursor-pointer"
+               onclick="toggleRawPacket('pkt-${detail.id}-${idx}')">
+            <div class="flex items-center justify-between gap-4 text-xs mono">
+              <span class="text-slate-400 w-36 shrink-0">${escapeHtml(m.time)} (+${m.offset_ms}ms)</span>
+              <span class="text-slate-300 w-64 shrink-0">${escapeHtml(m.src)} <span class="text-sky-400 font-bold">${arrow}</span> ${escapeHtml(m.dst)}</span>
+              <span class="${color} font-semibold flex-1 truncate">${escapeHtml(m.label)}</span>
+              <span class="text-slate-500 text-[11px]">Click for raw SIP</span>
+            </div>
+            <pre id="pkt-${detail.id}-${idx}" class="hidden mt-2 p-3 bg-slate-950 border border-slate-800 rounded text-xs text-slate-300 overflow-x-auto mono">${escapeHtml(m.raw)}</pre>
+          </div>
+        `;
+      }).join("");
+
+      const qosBanner = detail.qos_raw
+        ? `<div class="mb-3 p-2.5 bg-slate-950 border border-slate-800 rounded text-xs mono text-emerald-300"><strong>CUBE QoS Header:</strong> ${escapeHtml(detail.qos_raw)}</div>`
+        : "";
+
+      return `
+        <div class="p-4 bg-slate-900/90 border-t border-slate-800">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3 text-xs text-slate-400">
+            <div><strong class="text-slate-200">Call-ID:</strong> <span class="mono">${escapeHtml(detail.call_id)}</span></div>
+            <div><strong class="text-slate-200">Cause:</strong> ${escapeHtml(detail.disconnect_cause || "—")}</div>
+          </div>
+          ${qosBanner}
+          <div class="bg-slate-950/70 border border-slate-800 rounded-lg overflow-hidden">
+            <div class="flex gap-2 bg-slate-900 px-3 py-2">${nodeHeader}</div>
+            <div class="divide-y divide-slate-800/60">${rows}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function toggleRawPacket(elId) {
+      const el = document.getElementById(elId);
+      if (el) el.classList.toggle("hidden");
+    }
+
+    async function toggleExpand(callId) {
+      const detailRow = document.getElementById(`detail-row-${callId}`);
+      const linkEl = document.getElementById(`link-${callId}`);
+      if (!detailRow) return;
+
+      if (expandedCalls.has(callId)) {
+        expandedCalls.delete(callId);
+        detailRow.classList.add("hidden");
+        if (linkEl) linkEl.textContent = "Expand SIP Flow";
+        return;
+      }
+
+      expandedCalls.add(callId);
+      detailRow.classList.remove("hidden");
+      if (linkEl) linkEl.textContent = "Collapse Flow";
+
+      const container = document.getElementById(`detail-cell-${callId}`);
+      container.innerHTML = `<div class="p-4 text-xs text-slate-400">Loading SIP ladder...</div>`;
+
+      const res = await fetch(`/api/calls/${callId}`);
+      const detail = await res.json();
+      container.innerHTML = renderLadder(detail);
+    }
+
+    async function loadCalls() {
+      const q = document.getElementById("searchInput").value;
+      const res = await fetch(`/api/calls?q=${encodeURIComponent(q)}`);
+      const calls = await res.json();
+      const tbody = document.getElementById("callsBody");
+
+      if (!calls.length) {
+        tbody.innerHTML = `<tr><td colspan="8" class="py-8 text-center text-slate-400">No SIP calls found.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = calls.map(c => {
+        const isOpen = expandedCalls.has(c.id);
+        return `
+          <tr class="hover:bg-slate-800/40 transition">
+            <td class="py-3 px-4 font-medium text-slate-100 mono">${escapeHtml(c.calling_number || "Unknown")}</td>
+            <td class="py-3 px-4 font-medium text-slate-100 mono">${escapeHtml(c.called_number || "Unknown")}</td>
+            <td class="py-3 px-4 text-slate-300 text-xs mono">${escapeHtml(c.connect_time || c.invite_time || "—")}</td>
+            <td class="py-3 px-4 text-slate-300 text-xs mono">${escapeHtml(c.disconnect_time || "—")}</td>
+            <td class="py-3 px-4 text-slate-300 text-xs">${formatDuration(c.duration_sec)}</td>
+            <td class="py-3 px-4">${statusBadge(c.status)}</td>
+            <td class="py-3 px-4 text-xs">${formatQoS(c)}</td>
+            <td class="py-3 px-4 text-right">
+              <a id="link-${c.id}" href="javascript:void(0)" onclick="toggleExpand(${c.id})"
+                 class="text-sky-400 hover:text-sky-300 underline font-medium text-xs">
+                ${isOpen ? "Collapse Flow" : "Expand SIP Flow"}
+              </a>
+            </td>
+          </tr>
+          <tr id="detail-row-${c.id}" class="${isOpen ? "" : "hidden"}">
+            <td id="detail-cell-${c.id}" colspan="8" class="p-0"></td>
+          </tr>
+        `;
+      }).join("");
+
+      for (const id of expandedCalls) {
+        const container = document.getElementById(`detail-cell-${id}`);
+        if (container) {
+          const res = await fetch(`/api/calls/${id}`);
+          const detail = await res.json();
+          container.innerHTML = renderLadder(detail);
+        }
+      }
+    }
+
+    document.getElementById("searchInput").addEventListener("input", () => loadCalls());
+    setInterval(() => {
+      if (document.getElementById("autoRefresh").checked) loadCalls();
+    }, 5000);
+
+    loadCalls();
+  </script>
+</body>
+</html>

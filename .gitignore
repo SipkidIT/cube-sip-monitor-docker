@@ -1,0 +1,17 @@
+# Environment & secrets
+.env
+
+# SQLite database & capture artifacts
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.pcap
+
+# Python & OS artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
