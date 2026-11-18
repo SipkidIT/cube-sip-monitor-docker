@@ -226,6 +226,10 @@ async def process_sip_packet(src_ip: str, dst_ip: str, payload: str, ts: float):
     cseq = extract_header(lines, ("cseq",)) or ""
     cseq_method = cseq.split()[-1].upper() if cseq.split() else ""
 
+    # Ignore all SIP OPTIONS keepalive pings and responses
+    if cseq_method == "OPTIONS" or first_line.startswith("OPTIONS "):
+        return
+
     is_request = not first_line.startswith("SIP/2.0")
     method_or_status = first_line.split()[0] if is_request else " ".join(first_line.split()[1:3])
 
