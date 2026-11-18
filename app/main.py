@@ -180,9 +180,18 @@ def extract_session_id(lines: list[str]) -> Optional[str]:
     guid = extract_header(lines, ("cisco-guid",))
     if guid:
         return cisco_guid_to_confid(guid)
+    # CUBE outbound Call-ID format: <8hex>-<8hex>-<dec>-<hex>@<ip> (shares first 16 hex chars with ConfID)
+    cid = extract_header(lines, ("call-id", "i")) or ""
+    m = re.match(r"^([0-9a-fA-F]{8})-([0-9a-fA-F]{8})-(\d+)-([0-9a-fA-F]{1,8})@", cid.strip())
+    if m:
+        w0 = m.group(1).upper()
+        w1 = m.group(2).upper()
+        w2 = f"{int(m.group(3)) & 0xFF:02X}"
+        w3 = m.group(4).upper().zfill(8)
+        return f"{w0} {w1} {w2} {w3}"
     sid = extract_header(lines, ("session-id",))
     if sid:
-        return sid.split(";")[0].strip()
+        return sid.split(";").strip()
     return None
 
 
@@ -256,8 +265,9 @@ async def process_sip_packet(src_ip: str, dst_ip: str, payload: str, ts: float):
     cseq = extract_header(lines, ("cseq",)) or ""
     cseq_method = cseq.split()[-1].upper() if cseq.split() else ""
 
-    # Ignore all SIP OPTIONS keepalive pings and responses
-    if cseq_method == "OPTIONS" or first_line.startswith("OPTIONS "):
+    # Ignore non-call SIP dialogs (OPTIONS, REGISTER, SUBSCRIBE, NOTIFY, PUBLISH)
+    ignored_methods = ("OPTIONS", "REGISTER", "SUBSCRIBE", "NOTIFY", "PUBLISH")
+    if cseq_method in ignored_methods or first_line.split()[0].upper() in ignored_methods:
         return
 
     is_request = not first_line.startswith("SIP/2.0")
