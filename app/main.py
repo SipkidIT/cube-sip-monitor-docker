@@ -250,6 +250,27 @@ async def persist_dialog(dialog: dict):
             dialog.get("qos_raw"),
             json.dumps(dialog["messages"])
         ))
+        sid = dialog.get("session_id")
+        if sid and len(sid) == 29 and not sid.startswith(("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F")) is False:
+            prefix = sid[:17]
+            # If this leg has the authoritative Cisco-Guid ConfID (non-00 3rd byte), propagate it to the paired leg
+            if sid[18:20] != "00":
+                await db.execute(
+                    "UPDATE sip_calls SET session_id = ? WHERE session_id LIKE ? AND session_id != ?",
+                    (sid, f"{prefix}%", sid)
+                )
+            else:
+                # Otherwise inherit the authoritative ConfID if the paired leg was already saved
+                cur = await db.execute(
+                    "SELECT session_id FROM sip_calls WHERE session_id LIKE ? AND session_id NOT LIKE ? LIMIT 1",
+                    (f"{prefix}%", f"{prefix} 00 %")
+                )
+                row = await cur.fetchone()
+                if row and row[0]:
+                    await db.execute(
+                        "UPDATE sip_calls SET session_id = ? WHERE call_id = ?",
+                        (row[0], dialog["call_id"])
+                    )
         await db.commit()
 
 
