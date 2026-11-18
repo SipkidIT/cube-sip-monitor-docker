@@ -7,6 +7,8 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
+    environment:
+      - TZ=America/Los_Angeles
     env_file:
       - .env
     volumes:
