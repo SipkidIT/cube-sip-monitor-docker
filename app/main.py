@@ -253,17 +253,17 @@ async def persist_dialog(dialog: dict):
         sid = dialog.get("session_id")
         if sid and len(sid) == 29 and not sid.startswith(("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F")) is False:
             prefix = sid[:17]
-            # If this leg has the authoritative Cisco-Guid ConfID (non-00 3rd byte), propagate it to the paired leg
-            if sid[18:20] != "00":
+            # Only propagate if this leg carries the authoritative Cisco-Guid header
+            if dialog.get("has_cisco_guid"):
                 await db.execute(
                     "UPDATE sip_calls SET session_id = ? WHERE session_id LIKE ? AND session_id != ?",
                     (sid, f"{prefix}%", sid)
                 )
             else:
-                # Otherwise inherit the authoritative ConfID if the paired leg was already saved
+                # Otherwise inherit the authoritative Cisco-Guid ConfID if the paired leg was already saved
                 cur = await db.execute(
-                    "SELECT session_id FROM sip_calls WHERE session_id LIKE ? AND session_id NOT LIKE ? LIMIT 1",
-                    (f"{prefix}%", f"{prefix} 00 %")
+                    "SELECT session_id FROM sip_calls WHERE session_id LIKE ? AND session_id != ? LIMIT 1",
+                    (f"{prefix}%", sid)
                 )
                 row = await cur.fetchone()
                 if row and row[0]:
@@ -303,6 +303,7 @@ async def process_sip_packet(src_ip: str, dst_ip: str, payload: str, ts: float):
         active_dialogs[call_id] = {
             "call_id": call_id,
             "session_id": extract_session_id(lines),
+            "has_cisco_guid": bool(extract_header(lines, ("cisco-guid",))),
             "calling": extract_user_part(from_hdr),
             "called": extract_user_part(to_hdr),
             "invite_ts": ts,
@@ -320,7 +321,10 @@ async def process_sip_packet(src_ip: str, dst_ip: str, payload: str, ts: float):
 
     dialog = active_dialogs[call_id]
     dialog["last_seen"] = ts
-    if not dialog.get("session_id"):
+    if extract_header(lines, ("cisco-guid",)):
+        dialog["session_id"] = extract_session_id(lines)
+        dialog["has_cisco_guid"] = True
+    elif not dialog.get("session_id"):
         dialog["session_id"] = extract_session_id(lines)
 
     rel_ms = round((ts - dialog["invite_ts"]) * 1000)
