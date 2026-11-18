@@ -1,3 +1,4 @@
+from cause_codes import format_disconnect_reason
 import asyncio
 import json
 import os
@@ -289,17 +290,16 @@ async def process_sip_packet(src_ip: str, dst_ip: str, payload: str, ts: float):
         elif code >= 400 and cseq_method == "INVITE" and not dialog["connect_ts"]:
             dialog["disconnect_ts"] = ts
             dialog["status"] = "Failed"
-            dialog["cause"] = first_line.replace("SIP/2.0 ", "")
+            dialog["cause"] = format_disconnect_reason(code, payload)
     else:
         if method_or_status == "BYE":
             dialog["disconnect_ts"] = ts
             dialog["status"] = "Completed"
-            reason = extract_header(lines, ("reason",))
-            dialog["cause"] = reason if reason else "Normal Clearing (BYE)"
+            dialog["cause"] = format_disconnect_reason(200, payload)
         elif method_or_status == "CANCEL" and not dialog["connect_ts"]:
             dialog["disconnect_ts"] = ts
             dialog["status"] = "Canceled"
-            dialog["cause"] = "Caller Canceled"
+            dialog["cause"] = format_disconnect_reason(487, payload)
 
     await persist_dialog(dialog)
 
