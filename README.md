@@ -27,3 +27,21 @@ A containerized SIP call flow and QoS dashboard utilizing **sngrep**, **FastAPI*
 3. **B2BUA Correlation:** CUBE dual `Call-ID`s are linked automatically via the authoritative `Cisco-Guid` `ConfID`.
 4. **Permissions & Timezone:** Ensure proper file permissions and timezone alignment.
 5. **CLI Inspection:** Run `docker exec -it cube-sip-monitor sngrep -d <interface>` for live packet views.
+
+---
+
+## Resetting the Database
+
+To clear all captured call records and reset the ID counter back to `1` without deleting the database file:
+
+```bash
+sudo python3 -c '
+import sqlite3
+conn = sqlite3.connect("data/sip_calls.db")
+conn.execute("DELETE FROM sip_calls")
+conn.execute("DELETE FROM sqlite_sequence WHERE name=\"sip_calls\"")
+conn.commit()
+conn.close()
+print("[OK] Cleared all call records and reset ID counter.")
+'
+```
