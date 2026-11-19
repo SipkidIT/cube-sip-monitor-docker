@@ -485,7 +485,7 @@ async def tcp_sip_sniffer(iface: str):
         ip_hdr_len = (frame[offset] & 0x0F) * 4
         if frame[offset + 9] != 6:  # TCP only
             continue
-        ip_total_len = struct.unpack("!H", frame[offset + 2:offset + 4])[0][0]
+        ip_total_len = struct.unpack("!H", frame[offset + 2:offset + 4])[0]
         src_ip = socket.inet_ntoa(frame[offset + 12:offset + 16])
         dst_ip = socket.inet_ntoa(frame[offset + 16:offset + 20])
 
