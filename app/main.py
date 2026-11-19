@@ -202,6 +202,13 @@ def cisco_guid_to_confid(guid_str: str) -> str:
     return guid_str.strip()
 
 
+def extract_rfc_session_id(lines: list[str]) -> Optional[str]:
+    sid = extract_header(lines, ("session-id",))
+    if sid:
+        return sid.split(";")[0].strip()
+    return None
+
+
 def extract_session_id(lines: list[str]) -> Optional[str]:
     guid = extract_header(lines, ("cisco-guid",))
     if guid:
@@ -213,7 +220,7 @@ def extract_session_id(lines: list[str]) -> Optional[str]:
         w0 = m.group(1).upper()
         w1 = m.group(2).upper()
         w2 = f"{int(m.group(3)) & 0xFF:02X}"
-        w3 = m.group(4).upper().zfill(8)
+        w3 = m.group(4).upper()
         return f"{w0} {w1} {w2} {w3}"
     sid = extract_header(lines, ("session-id",))
     if sid:
@@ -297,6 +304,16 @@ async def persist_dialog(dialog: dict):
                         "UPDATE sip_calls SET session_id = ? WHERE call_id = ?",
                         (row[0], dialog["call_id"])
                     )
+        rfc_sid = dialog.get("rfc_sid")
+        cur_conf = dialog.get("session_id")
+        if rfc_sid and cur_conf and " " in cur_conf:
+            for d in active_dialogs.values():
+                if d.get("rfc_sid") == rfc_sid and d.get("call_id") != dialog["call_id"]:
+                    d["session_id"] = cur_conf
+                    await db.execute(
+                        "UPDATE sip_calls SET session_id = ? WHERE call_id = ?",
+                        (cur_conf, d["call_id"])
+                    )
         await db.commit()
 
 
@@ -332,6 +349,7 @@ async def process_sip_packet(src_ip: str, dst_ip: str, payload: str, ts: float):
             "call_id": call_id,
             "session_id": extract_session_id(lines),
             "has_cisco_guid": bool(extract_header(lines, ("cisco-guid",))),
+            "rfc_sid": extract_rfc_session_id(lines),
             "calling": extract_user_part(from_hdr),
             "called": extract_user_part(to_hdr),
             "invite_ts": ts,
@@ -349,6 +367,9 @@ async def process_sip_packet(src_ip: str, dst_ip: str, payload: str, ts: float):
 
     dialog = active_dialogs[call_id]
     dialog["last_seen"] = ts
+    rfc_sid = extract_rfc_session_id(lines)
+    if rfc_sid:
+        dialog["rfc_sid"] = rfc_sid
     if extract_header(lines, ("cisco-guid",)):
         dialog["session_id"] = extract_session_id(lines)
         dialog["has_cisco_guid"] = True
