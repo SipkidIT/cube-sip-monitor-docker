@@ -10,6 +10,7 @@ A containerized SIP call flow and QoS dashboard utilizing **sngrep**, **FastAPI*
 - **SIP & Q.850 Cause Code Translation:** Converts response codes and `Reason: Q.850;cause=X` headers into plain English.
 - **Noise Filtering:** Automatically filters non-call SIP dialogs (`OPTIONS`, `REGISTER`, `SUBSCRIBE`) to keep the database focused on voice calls.
 - **Interactive Ladder Diagrams:** View node-to-node SIP flows and raw headers.
+- **HTTPS & Basic Authentication:** Encrypts web traffic with an auto-generated TLS certificate (`./certs/`) and protects the dashboard with configurable `.env` credentials.
 - **One-Click HTML Call Flow Export:** Download any call leg as a self-contained dark-mode `.html` report containing call metadata, ladder timeline, and full raw SIP/SDP packets.
 
 ---
@@ -52,7 +53,7 @@ print("[OK] Cleared all call records and reset ID counter.")
 ## Exporting Call Flows (HTML)
 
 To save or share a SIP trace for troubleshooting (e.g., Cisco TAC or carrier tickets):
-1. Click **Expand SIP Flow** on any call row in the dashboard (`http://<YOUR_UBUNTU_IP>:8081`).
+1. Click **Expand SIP Flow** on any call row in the dashboard (`https://<YOUR_UBUNTU_IP>:8081`).
 2. Click the **Download HTML** button next to the disconnect cause.
 3. Open the downloaded `.html` file offline in any browser to view the complete call summary, SIP ladder timeline, and full raw SIP/SDP headers.
 
@@ -73,3 +74,11 @@ monitor session 1 type erspan-source
 ```
 
 *(Note: When using ERSPAN across Layer-3 subnets, decapsulate the incoming GRE tunnel on Ubuntu using an `erspan` interface matching `erspan-id 10` and set `CAPTURE_IFACE` to that tunnel interface in `.env`, or use VMware/switch SPAN mirroring to send unencapsulated frames directly to your host NIC such as `ens34`.)*
+
+---
+
+## Security & HTTPS Access
+
+- **HTTPS Encryption:** On first startup, `entrypoint.sh` automatically generates a 10-year self-signed TLS certificate inside `./certs/` (`cert.pem` and `key.pem`, excluded from Git via `.gitignore`). Accept the browser security prompt once when visiting `https://<YOUR_UBUNTU_IP>:8081`.
+- **Login Credentials:** Set `WEB_USER` and `WEB_PASSWORD` in your `.env` file before starting the container. Every web page and `/api/calls` endpoint requires HTTP Basic Authentication.
+- **Custom Certificates:** To use an internal CA-signed certificate instead of the auto-generated self-signed one, replace `./certs/cert.pem` and `./certs/key.pem` and run `docker compose restart`.
