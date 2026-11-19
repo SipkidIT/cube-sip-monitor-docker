@@ -453,3 +453,63 @@ async def get_call_detail(call_db_id: int):
         data = dict(row)
         data["messages"] = json.loads(data.pop("sip_ladder_json") or "[]")
     return JSONResponse(data)
+
+
+from html import escape as html_escape
+from fastapi.responses import HTMLResponse
+
+
+@app.get("/api/calls/{call_db_id}/export")
+async def export_call_flow(call_db_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM sip_calls WHERE id = ?", (call_db_id,))
+        row = await cur.fetchone()
+    if not row:
+        return JSONResponse({"error": "Call not found"}, status_code=404)
+
+    call = dict(row)
+    messages = json.loads(call.get("sip_ladder_json") or "[]")
+    safe_cid = re.sub(r"[^a-zA-Z0-9._-]", "_", call["call_id"])[:64]
+    base_name = f"sip_flow_{call['id']}_{safe_cid}"
+    qos_str = f"{call.get('qos_mos') or 'N/A'} / {call.get('qos_jitter_ms') or 'N/A'} ms / {call.get('qos_packet_loss') if call.get('qos_packet_loss') is not None else 'N/A'}"
+
+    ladder_rows = "".join(
+        f"<tr><td>{m.get('seq')}</td><td>{html_escape(str(m.get('time')))} (+{m.get('offset_ms')}ms)</td>"
+        f"<td>{html_escape(str(m.get('src')))} &rarr; {html_escape(str(m.get('dst')))}</td>"
+        f"<td><strong>{html_escape(str(m.get('label')))}</strong></td></tr>"
+        for m in messages
+    )
+    raw_blocks = "".join(
+        f"<h4>Packet #{m.get('seq')} | {html_escape(str(m.get('time')))} | {html_escape(str(m.get('src')))} &rarr; {html_escape(str(m.get('dst')))}</h4>"
+        f"<pre>{html_escape(str(m.get('raw', '')))}</pre>"
+        for m in messages
+    )
+    html_doc = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>SIP Flow #{call['id']}</title>
+<style>
+  body {{ font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; padding: 24px; }}
+  h1, h2, h4 {{ color: #38bdf8; }}
+  table {{ width: 100%; border-collapse: collapse; margin-bottom: 24px; font-size: 13px; }}
+  th, td {{ border: 1px solid #334155; padding: 8px 10px; text-align: left; }}
+  th {{ background: #1e293b; }}
+  pre {{ background: #020617; border: 1px solid #1e293b; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; color: #cbd5e1; }}
+</style></head><body>
+<h1>Cisco CUBE SIP Call Flow Report (ID #{call['id']})</h1>
+<table>
+  <tr><th>Call-ID</th><td>{html_escape(str(call.get('call_id')))}</td><th>ConfID / Session</th><td>{html_escape(str(call.get('session_id') or 'N/A'))}</td></tr>
+  <tr><th>Calling</th><td>{html_escape(str(call.get('calling_number')))}</td><th>Called</th><td>{html_escape(str(call.get('called_number')))}</td></tr>
+  <tr><th>Invite Time</th><td>{html_escape(str(call.get('invite_time')))}</td><th>Connect Time</th><td>{html_escape(str(call.get('connect_time') or 'N/A'))}</td></tr>
+  <tr><th>Disconnect Time</th><td>{html_escape(str(call.get('disconnect_time') or 'N/A'))}</td><th>Duration</th><td>{call.get('duration_sec') if call.get('duration_sec') is not None else 'N/A'} sec</td></tr>
+  <tr><th>Status</th><td>{html_escape(str(call.get('status')))}</td><th>Cause</th><td>{html_escape(str(call.get('disconnect_cause') or 'N/A'))}</td></tr>
+  <tr><th>QoS (MOS/Jit/Loss)</th><td colspan="3">{html_escape(qos_str)}</td></tr>
+</table>
+<h2>SIP Ladder Timeline</h2>
+<table><thead><tr><th>#</th><th>Time</th><th>Direction</th><th>SIP Message</th></tr></thead><tbody>{ladder_rows}</tbody></table>
+<h2>Raw SIP Packets</h2>
+{raw_blocks}
+</body></html>"""
+    return HTMLResponse(
+        content=html_doc,
+        headers={"Content-Disposition": f'attachment; filename="{base_name}.html"'}
+    )
