@@ -55,3 +55,21 @@ To save or share a SIP trace for troubleshooting (e.g., Cisco TAC or carrier tic
 1. Click **Expand SIP Flow** on any call row in the dashboard (`http://<YOUR_UBUNTU_IP>:8081`).
 2. Click the **Download HTML** button next to the disconnect cause.
 3. Open the downloaded `.html` file offline in any browser to view the complete call summary, SIP ladder timeline, and full raw SIP/SDP headers.
+
+---
+
+## Cisco CUBE ERSPAN Source Configuration
+
+To mirror SIP traffic directly from a Cisco CUBE (`172.16.10.40`) to the Ubuntu monitoring server (`10.2.12.6`) over Layer 3 using ERSPAN, configure the following monitor session on the CUBE:
+
+```ios
+monitor session 1 type erspan-source
+ source interface Gi1
+ destination
+  erspan-id 10
+  mtu 1464
+  ip address 10.2.12.6
+  origin ip address 172.16.10.40
+```
+
+*(Note: When using ERSPAN across Layer-3 subnets, decapsulate the incoming GRE tunnel on Ubuntu using an `erspan` interface matching `erspan-id 10` and set `CAPTURE_IFACE` to that tunnel interface in `.env`, or use VMware/switch SPAN mirroring to send unencapsulated frames directly to your host NIC such as `ens34`.)*
