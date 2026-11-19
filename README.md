@@ -29,7 +29,8 @@ A containerized SIP call flow and QoS dashboard utilizing **sngrep**, **FastAPI*
 3. **B2BUA Correlation:** CUBE dual `Call-ID`s are linked automatically via the authoritative `Cisco-Guid` `ConfID`.
 4. **Permissions & Timezone:** Ensure proper file permissions and timezone alignment.
 5. **CLI Inspection:** Run `docker exec -it cube-sip-monitor sngrep -d <interface>` for live packet views.
-
+# 3. Verify HTTPS + Basic Auth is active
+docker logs --tail 15 cube-sip-monitor
 ---
 
 ## Resetting the Database
