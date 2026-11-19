@@ -13,3 +13,4 @@ services:
       - .env
     volumes:
       - ./data:/app/data
+      - ./certs:/app/certs

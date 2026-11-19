@@ -20,6 +20,32 @@ HEP_PORT = int(os.getenv("HEP_LISTEN_PORT", "9060"))
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "30"))
 
 app = FastAPI(title="Cisco CUBE SIP Flow & QoS Monitor")
+
+import base64
+import secrets
+from fastapi import Request
+from fastapi.responses import Response as RawResponse
+
+WEB_USER = os.getenv("WEB_USER", "admin")
+WEB_PASSWORD = os.getenv("WEB_PASSWORD", "ChangeMe123!")
+
+@app.middleware("http")
+async def basic_auth_middleware(request: Request, call_next):
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(auth[6:]).decode("utf-8")
+            user, pwd = decoded.split(":", 1)
+            if secrets.compare_digest(user, WEB_USER) and secrets.compare_digest(pwd, WEB_PASSWORD):
+                return await call_next(request)
+        except Exception:
+            pass
+    return RawResponse(
+        content="Authentication required",
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Cisco CUBE SIP Monitor"'},
+    )
+
 templates = Jinja2Templates(directory="/app/templates")
 
 # In-memory active dialog tracker keyed by Call-ID
