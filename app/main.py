@@ -217,7 +217,7 @@ def extract_session_id(lines: list[str]) -> Optional[str]:
         return f"{w0} {w1} {w2} {w3}"
     sid = extract_header(lines, ("session-id",))
     if sid:
-        return sid.split(";").strip()
+        return sid.split(";")[0].strip()
     return None
 
 
@@ -321,7 +321,9 @@ async def process_sip_packet(src_ip: str, dst_ip: str, payload: str, ts: float):
     method_or_status = first_line.split()[0] if is_request else " ".join(first_line.split()[1:3])
 
     if call_id not in active_dialogs:
-        # Ignore stray OPTIONS/REGISTER unless part of call
+        # Do not create a new dialog from mid-setup provisional responses (100 Trying / 180 Ringing)
+        if not is_request and first_line.startswith(("SIP/2.0 100", "SIP/2.0 180", "SIP/2.0 183")):
+            return
         if is_request and method_or_status in ("OPTIONS", "REGISTER", "NOTIFY", "SUBSCRIBE"):
             return
         from_hdr = extract_header(lines, ("from", "f"))
@@ -402,6 +404,102 @@ async def process_sip_packet(src_ip: str, dst_ip: str, payload: str, ts: float):
     await persist_dialog(dialog)
 
 
+
+import socket
+import struct
+
+def parse_sip_stream(buf: bytes) -> tuple[list[str], bytes]:
+    """Extract complete SIP messages from a reassembled TCP byte buffer using Content-Length."""
+    messages = []
+    while True:
+        # Trim any leading CRLF keepalives
+        buf = buf.lstrip(b"\r\n")
+        sep = buf.find(b"\r\n\r\n")
+        if sep == -1:
+            break
+        header_bytes = buf[:sep]
+        header_text = header_bytes.decode("utf-8", errors="replace")
+        m_len = re.search(r"(?:^|\r\n)(?:Content-Length|l)\s*:\s*(\d+)", header_text, re.IGNORECASE)
+        content_len = int(m_len.group(1)) if m_len else 0
+        total_len = sep + 4 + content_len
+        if len(buf) < total_len:
+            break
+        full_msg = buf[:total_len].decode("utf-8", errors="replace")
+        messages.append(full_msg)
+        buf = buf[total_len:]
+    return messages, buf
+
+
+async def tcp_sip_sniffer(iface: str):
+    """Capture and reassemble multi-segment TCP port 5060 SIP packets directly from CAPTURE_IFACE."""
+    loop = asyncio.get_running_loop()
+    try:
+        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
+        sock.bind((iface, 0))
+        sock.setblocking(False)
+    except Exception as e:
+        print(f"[WARN] Could not start raw TCP SIP sniffer on {iface}: {e}")
+        return
+
+    print(f"[INFO] Started multi-segment TCP SIP reassembler on {iface} (port 5060)...")
+    streams: dict[tuple, dict] = {}
+
+    while True:
+        try:
+            frame = await loop.sock_recv(sock, 65535)
+        except Exception:
+            await asyncio.sleep(0.01)
+            continue
+
+        if len(frame) < 54:
+            continue
+        eth_proto = struct.unpack("!H", frame[12:14])[0]
+        offset = 14
+        if eth_proto == 0x8100:  # 802.1Q VLAN tag
+            eth_proto = struct.unpack("!H", frame[16:18])[0]
+            offset = 18
+        if eth_proto != 0x0800:  # IPv4 only
+            continue
+
+        ip_hdr_len = (frame[offset] & 0x0F) * 4
+        if frame[offset + 9] != 6:  # TCP only
+            continue
+        ip_total_len = struct.unpack("!H", frame[offset + 2:offset + 4])[0][0]
+        src_ip = socket.inet_ntoa(frame[offset + 12:offset + 16])
+        dst_ip = socket.inet_ntoa(frame[offset + 16:offset + 20])
+
+        tcp_offset = offset + ip_hdr_len
+        src_port, dst_port, seq = struct.unpack("!HHI", frame[tcp_offset:tcp_offset + 8])
+        if src_port != 5060 and dst_port != 5060:
+            continue
+
+        tcp_hdr_len = ((frame[tcp_offset + 12] >> 4) & 0x0F) * 4
+        payload_start = tcp_offset + tcp_hdr_len
+        payload_end = min(len(frame), offset + ip_total_len)
+        payload = frame[payload_start:payload_end]
+        if not payload:
+            continue
+
+        key = (src_ip, src_port, dst_ip, dst_port)
+        st = streams.setdefault(key, {"next_seq": None, "segments": {}, "buf": b"", "ts": time.time()})
+        st["ts"] = time.time()
+
+        if st["next_seq"] is None or payload.startswith((b"INVITE ", b"BYE ", b"CANCEL ", b"ACK ", b"SIP/2.0 ")):
+            if st["next_seq"] is None:
+                st["next_seq"] = seq
+
+        st["segments"][seq] = payload
+        while st["next_seq"] in st["segments"]:
+            seg = st["segments"].pop(st["next_seq"])
+            st["buf"] += seg
+            st["next_seq"] = (st["next_seq"] + len(seg)) & 0xFFFFFFFF
+
+        msgs, st["buf"] = parse_sip_stream(st["buf"])
+        now = time.time()
+        for msg in msgs:
+            asyncio.create_task(process_sip_packet(src_ip, dst_ip, msg, now))
+
+
 class HEPProtocol(asyncio.DatagramProtocol):
     def datagram_received(self, data: bytes, addr):
         parsed = parse_hepv3(data)
@@ -435,6 +533,7 @@ async def on_startup():
     loop = asyncio.get_running_loop()
     await loop.create_datagram_endpoint(lambda: HEPProtocol(), local_addr=(HEP_HOST, HEP_PORT))
     asyncio.create_task(maintenance_worker())
+    asyncio.create_task(tcp_sip_sniffer(os.getenv("CAPTURE_IFACE", "ens34")))
 
 
 @app.get("/", response_class=HTMLResponse)
