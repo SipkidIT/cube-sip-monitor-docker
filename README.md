@@ -82,3 +82,22 @@ monitor session 1 type erspan-source
 - **HTTPS Encryption:** On first startup, `entrypoint.sh` automatically generates a 10-year self-signed TLS certificate inside `./certs/` (`cert.pem` and `key.pem`, excluded from Git via `.gitignore`). Accept the browser security prompt once when visiting `https://<YOUR_UBUNTU_IP>:8081`.
 - **Login Credentials:** Set `WEB_USER` and `WEB_PASSWORD` in your `.env` file before starting the container. Every web page and `/api/calls` endpoint requires HTTP Basic Authentication.
 - **Custom Certificates:** To use an internal CA-signed certificate instead of the auto-generated self-signed one, replace `./certs/cert.pem` and `./certs/key.pem` and run `docker compose restart`.
+
+
+## Master Prompt (Recreate everything in One Shot)
+```
+Prompt:
+Build a complete, downloadable Docker project (docker-compose.yml, Dockerfile, entrypoint.sh, .env.example, .gitignore, requirements.txt, app/main.py, app/cause_codes.py, app/templates/index.html, and README.md) for a Cisco CUBE SIP Flow & QoS Monitor on Ubuntu.
+Architecture & Runtime Requirements:
+• Capture Engine: Use network_mode: host and run sngrep -d ${CAPTURE_IFACE} -N -q -H udp:127.0.0.1:9060 in the background, streaming HEPv3 packets to a Python FastAPI + aiosqlite backend (app/main.py). Capture directly on a host NIC (default CAPTURE_IFACE=ens34, not GRE/ERSPAN).
+• Timezone & Port: Set TZ=America/Los_Angeles (install tzdata in the container) and run Uvicorn on 0.0.0.0:${WEB_PORT} (default WEB_PORT=8081).
+• Security: Auto-generate a self-signed TLS certificate (./certs/cert.pem and key.pem) via openssl in entrypoint.sh so Uvicorn serves HTTPS, and protect all routes with HTTP Basic Authentication configured via WEB_USER and WEB_PASSWORD in .env.
+SIP Parsing & Database Logic (SQLite in ./data/sip_calls.db):
+• Noise Filtering: Drop all requests and responses where CSeq method or request method is OPTIONS, REGISTER, SUBSCRIBE, NOTIFY, or PUBLISH.
+• Cisco CDR ConfID Correlation: Decode the Cisco-Guid header (4 decimal 32-bit integers) into Cisco CDR hex format XXXXXXXX XXXXXXXX XX XXXXXXXX (using the low byte nums[2] & 0xFF for the 3rd field). For outbound CUBE legs lacking Cisco-Guid, parse the Call-ID prefix (<8hex>-<8hex>-<dec>-<hex>@<ip>) and sync both legs to the authoritative Cisco-Guid ConfID.
+• Cause Codes & QoS: Map both SIP status codes (4xx/5xx/6xx) and Reason: Q.850;cause=X headers into plain-English disconnect descriptions. Parse Cisco X-RTP-Stat / P-RTP-Stat headers for MOS, jitter, and packet loss.
+Web Dashboard (Tailwind CSS + index.html):
+• Dark-mode call table showing ID, Calling, Called, Invite/Connect/Disconnect times (PST), Duration, Status badge, QoS, and an Expand SIP Flow toggle that stays open during 4-second auto-refresh polling.
+• Inside each expanded row: display Call-ID, a clickable ConfID pill that filters the search bar by the shared 17-character prefix to show both inbound/outbound CUBE legs, a Download HTML button (/api/calls/{id}/export) that downloads a self-contained offline .html report, and a clickable node-to-node SIP ladder with raw SIP/SDP packet inspection.
+• Include README.md instructions for disabling NIC offloading (ethtool -K ens34 gro off lro off tso off gso off) via a persistent systemd service and resetting the SQLite database.
+```
