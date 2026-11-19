@@ -10,6 +10,7 @@ A containerized SIP call flow and QoS dashboard utilizing **sngrep**, **FastAPI*
 - **SIP & Q.850 Cause Code Translation:** Converts response codes and `Reason: Q.850;cause=X` headers into plain English.
 - **Noise Filtering:** Automatically filters non-call SIP dialogs (`OPTIONS`, `REGISTER`, `SUBSCRIBE`) to keep the database focused on voice calls.
 - **Interactive Ladder Diagrams:** View node-to-node SIP flows and raw headers.
+- **One-Click HTML Call Flow Export:** Download any call leg as a self-contained dark-mode `.html` report containing call metadata, ladder timeline, and full raw SIP/SDP packets.
 
 ---
 
@@ -45,3 +46,12 @@ conn.close()
 print("[OK] Cleared all call records and reset ID counter.")
 '
 ```
+
+---
+
+## Exporting Call Flows (HTML)
+
+To save or share a SIP trace for troubleshooting (e.g., Cisco TAC or carrier tickets):
+1. Click **Expand SIP Flow** on any call row in the dashboard (`http://<YOUR_UBUNTU_IP>:8081`).
+2. Click the **Download HTML** button next to the disconnect cause.
+3. Open the downloaded `.html` file offline in any browser to view the complete call summary, SIP ladder timeline, and full raw SIP/SDP headers.
