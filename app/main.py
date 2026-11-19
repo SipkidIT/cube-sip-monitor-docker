@@ -220,7 +220,7 @@ def extract_session_id(lines: list[str]) -> Optional[str]:
         w0 = m.group(1).upper()
         w1 = m.group(2).upper()
         w2 = f"{int(m.group(3)) & 0xFF:02X}"
-        w3 = m.group(4).upper()
+        w3 = m.group(4).upper().lstrip("0") or "0"
         return f"{w0} {w1} {w2} {w3}"
     sid = extract_header(lines, ("session-id",))
     if sid:
@@ -378,6 +378,11 @@ async def process_sip_packet(src_ip: str, dst_ip: str, payload: str, ts: float):
 
     rel_ms = round((ts - dialog["invite_ts"]) * 1000)
     ts_str = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().strftime("%H:%M:%S.%f")[:-3]
+
+    # Deduplicate if both sngrep and tcp_sip_sniffer delivered the exact same SIP packet
+    for prev in dialog["messages"][-4:]:
+        if prev["src"] == src_ip and prev["dst"] == dst_ip and prev["raw"] == payload:
+            return
 
     dialog["messages"].append({
         "seq": len(dialog["messages"]) + 1,
